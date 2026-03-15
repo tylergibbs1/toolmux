@@ -54,11 +54,21 @@ search({ query: "create github issue", include_schema: true })
 
 ## Quick start
 
-```bash
-git clone https://github.com/tylergibbs1/toolmux
-cd toolmux
-bun install
+### Install from npm
 
+```bash
+npm install -g toolmux
+```
+
+Or use directly with `npx`:
+
+```bash
+npx toolmux --help
+```
+
+### Create a config
+
+```bash
 cat > toolmux.json << 'EOF'
 {
   "servers": [
@@ -73,7 +83,14 @@ cat > toolmux.json << 'EOF'
   ]
 }
 EOF
+```
 
+### From source
+
+```bash
+git clone https://github.com/tylergibbs1/toolmux
+cd toolmux
+bun install
 bun run src/cli.ts --help
 ```
 
@@ -82,7 +99,13 @@ bun run src/cli.ts --help
 ### Claude Code
 
 ```bash
-claude mcp add toolmux -- npx tsx /path/to/toolmux/src/cli.ts
+claude mcp add toolmux -- npx toolmux
+```
+
+If your `toolmux.json` is in a specific directory:
+
+```bash
+claude mcp add toolmux -- npx toolmux --config /path/to/toolmux.json
 ```
 
 ### Claude Desktop
@@ -94,7 +117,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
   "mcpServers": {
     "toolmux": {
       "command": "npx",
-      "args": ["tsx", "/path/to/toolmux/src/cli.ts"]
+      "args": ["toolmux"]
     }
   }
 }
@@ -109,7 +132,7 @@ Add to `.cursor/mcp.json`:
   "mcpServers": {
     "toolmux": {
       "command": "npx",
-      "args": ["tsx", "/path/to/toolmux/src/cli.ts"]
+      "args": ["toolmux"]
     }
   }
 }
