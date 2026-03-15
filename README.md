@@ -275,6 +275,8 @@ When the agent uses `execute`:
 
 ## Examples
 
+These require cloning the repo (`git clone https://github.com/tylergibbs1/toolmux && cd toolmux && bun install`):
+
 ```bash
 # Run the agent test (Claude + toolmux + filesystem MCP)
 ANTHROPIC_API_KEY=sk-... npx tsx examples/agent-test.ts
