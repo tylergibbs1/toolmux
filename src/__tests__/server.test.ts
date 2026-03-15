@@ -68,28 +68,26 @@ describe("toolmux MCP server", () => {
     await client?.close();
   });
 
-  it("exposes exactly 4 tools", async () => {
+  it("exposes exactly 2 tools: execute and search", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
     expect(names).toContain("execute");
-    expect(names).toContain("discover");
-    expect(names).toContain("describe");
-    expect(names).toContain("call");
-    expect(names).toHaveLength(4);
+    expect(names).toContain("search");
+    expect(names).toHaveLength(2);
   });
 
-  it("discover returns matching tools", async () => {
+  it("search returns matching tools", async () => {
     const result = await client.callTool({
-      name: "discover",
+      name: "search",
       arguments: { query: "read file" },
     });
     const text = (result.content as Array<{ type: string; text: string }>)[0].text;
     expect(text).toContain("filesystem__read_file");
   });
 
-  it("discover with empty query returns all tools", async () => {
+  it("search with empty query returns all tools", async () => {
     const result = await client.callTool({
-      name: "discover",
+      name: "search",
       arguments: { query: "" },
     });
     const text = (result.content as Array<{ type: string; text: string }>)[0].text;
@@ -97,46 +95,34 @@ describe("toolmux MCP server", () => {
     expect(text).toContain("filesystem__read_file");
   });
 
-  it("discover with no matches gives helpful message", async () => {
+  it("search with no matches gives helpful message", async () => {
     const result = await client.callTool({
-      name: "discover",
+      name: "search",
       arguments: { query: "nonexistent_xyz" },
     });
     const text = (result.content as Array<{ type: string; text: string }>)[0].text;
     expect(text).toContain("No tools match");
-    expect(text).toContain("Connected servers");
   });
 
-  it("describe returns full schema", async () => {
+  it("search with include_schema returns full schemas", async () => {
     const result = await client.callTool({
-      name: "describe",
-      arguments: { tool: "filesystem__read_file" },
+      name: "search",
+      arguments: { query: "read file", include_schema: true },
     });
     const text = (result.content as Array<{ type: string; text: string }>)[0].text;
     const parsed = JSON.parse(text);
-    expect(parsed.tool).toBe("filesystem__read_file");
-    expect(parsed.server).toBe("filesystem");
-    expect(parsed.inputSchema.properties).toHaveProperty("path");
+    expect(parsed[0].tool).toBe("filesystem__read_file");
+    expect(parsed[0].inputSchema.properties).toHaveProperty("path");
   });
 
-  it("describe for unknown tool suggests alternatives", async () => {
+  it("search concise mode is compact", async () => {
     const result = await client.callTool({
-      name: "describe",
-      arguments: { tool: "github__read_file" },
+      name: "search",
+      arguments: { query: "" },
     });
     const text = (result.content as Array<{ type: string; text: string }>)[0].text;
-    expect(text).toContain("not found");
-    // Should suggest similar tools
-    expect(text).toMatch(/Similar tools|discover/);
-  });
-
-  it("call errors for unknown tool with suggestions", async () => {
-    const result = await client.callTool({
-      name: "call",
-      arguments: { tool: "github__read_file", arguments: {} },
-    });
-    const text = (result.content as Array<{ type: string; text: string }>)[0].text;
-    expect(text).toContain("not found");
-    expect(result.isError).toBe(true);
+    // Concise mode: "name: description" per line, no JSON
+    expect(text).not.toContain("{");
+    expect(text).toContain(":");
   });
 });

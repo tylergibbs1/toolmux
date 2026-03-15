@@ -12,7 +12,7 @@ export function createToolmuxServer(pool: Pool): McpServer {
 
   const executor = new Executor(pool);
 
-  // --- execute: write and run TypeScript against all tools ---
+  // --- execute: the primary tool — write code to call tools ---
   server.registerTool(
     "execute",
     {
@@ -20,7 +20,7 @@ export function createToolmuxServer(pool: Pool): McpServer {
       description: buildExecuteDescription(pool.listTools()),
       inputSchema: {
         code: z.string().describe(
-          "TypeScript/JavaScript code to execute. Use tools.qualified_name(args) to call tools. Return a value to get it back."
+          "JS code. Use `await tools.name(args)` to call tools. `return` a value to get results."
         ),
       },
     },
@@ -53,24 +53,25 @@ export function createToolmuxServer(pool: Pool): McpServer {
     }
   );
 
-  // --- discover ---
+  // --- search: find tools by intent, optionally with full schema ---
   server.registerTool(
-    "discover",
+    "search",
     {
-      title: "Discover Tools",
-      description: [
-        "Search all connected servers for tools matching your intent.",
-        "Returns ranked results with qualified names you can pass to 'call' or use in 'execute' code.",
-        "Tip: Pass an empty query to list all available tools.",
-      ].join("\n"),
+      title: "Search Tools",
+      description:
+        "Find available tools by intent. Use before execute when you don't know the tool name or need to see its input schema. " +
+        "Set include_schema=true to get the full JSON Schema for matching tools (avoids a second round trip).",
       inputSchema: {
         query: z.string().describe(
-          "Natural language search, e.g. 'send slack message', 'read file'. Empty string lists all tools."
+          "What you want to do, e.g. 'read file', 'list repos'. Empty string returns all tools."
         ),
-        limit: z.number().optional().default(10).describe("Max results (default 10)"),
+        include_schema: z.boolean().optional().default(false).describe(
+          "If true, include full inputSchema for each result. Use when you need argument details."
+        ),
+        limit: z.number().optional().default(10).describe("Max results"),
       },
     },
-    async ({ query, limit }) => {
+    async ({ query, include_schema, limit }) => {
       const results = pool.discover(query, limit);
 
       if (results.length === 0) {
@@ -78,112 +79,49 @@ export function createToolmuxServer(pool: Pool): McpServer {
         return {
           content: [{
             type: "text" as const,
-            text: `No tools match "${query}".\n\nConnected servers: ${servers.map((s) => s.name).join(", ") || "(none)"}\n\nTry a broader query or empty string to list all tools.`,
+            text: `No tools match "${query}". Servers: ${servers.map((s) => s.name).join(", ") || "(none)"}. Try a broader query.`,
           }],
         };
       }
 
-      const lines = results.map((t) =>
-        `- ${t.qualifiedName}  —  ${t.description ? (t.description.length > 100 ? t.description.slice(0, 97) + "..." : t.description) : "(no description)"}  [${t.server}]`
-      );
+      if (include_schema) {
+        // Return structured data with schemas — one round trip replaces discover + describe
+        const detailed = results.map((t) => ({
+          tool: t.qualifiedName,
+          server: t.server,
+          description: t.description.length > 120
+            ? t.description.slice(0, 117) + "..."
+            : t.description,
+          inputSchema: t.inputSchema,
+        }));
 
-      const totalAvailable = pool.totalTools;
-      const footer = results.length < totalAvailable
-        ? `\nShowing ${results.length} of ${totalAvailable} total tools.`
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify(detailed, null, 2),
+          }],
+        };
+      }
+
+      // Concise list — tool name + short description
+      const lines = results.map((t) => {
+        const desc = t.description
+          ? (t.description.length > 80 ? t.description.slice(0, 77) + "..." : t.description)
+          : "";
+        return `${t.qualifiedName}: ${desc}`;
+      });
+
+      const total = pool.totalTools;
+      const footer = results.length < total
+        ? `\n(${results.length}/${total} shown)`
         : "";
 
       return {
         content: [{
           type: "text" as const,
-          text: `${lines.join("\n")}${footer}`,
+          text: lines.join("\n") + footer,
         }],
       };
-    }
-  );
-
-  // --- describe ---
-  server.registerTool(
-    "describe",
-    {
-      title: "Describe Tool",
-      description: [
-        "Get the full input schema for a tool.",
-        "Use this before 'execute' if you need to know exact argument shapes.",
-      ].join("\n"),
-      inputSchema: {
-        tool: z.string().describe("Qualified tool name, e.g. 'filesystem__read_file'"),
-      },
-    },
-    async ({ tool: name }) => {
-      const tool = pool.describe(name);
-
-      if (!tool) {
-        const suggestions = pool.discover(name, 5);
-        const hint = suggestions.length > 0
-          ? `\n\nSimilar tools:\n${suggestions.map((s) => `- ${s.qualifiedName}`).join("\n")}`
-          : "\n\nUse discover to search for tools.";
-        return {
-          content: [{ type: "text" as const, text: `Tool "${name}" not found.${hint}` }],
-        };
-      }
-
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            tool: tool.qualifiedName,
-            server: tool.server,
-            description: tool.description,
-            inputSchema: tool.inputSchema,
-            ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}),
-          }, null, 2),
-        }],
-      };
-    }
-  );
-
-  // --- call (simple single-tool invocation, no sandbox) ---
-  server.registerTool(
-    "call",
-    {
-      title: "Call Tool",
-      description: [
-        "Invoke a single tool directly (no code execution).",
-        "For chaining multiple calls, use 'execute' instead.",
-      ].join("\n"),
-      inputSchema: {
-        tool: z.string().describe("Qualified tool name, e.g. 'filesystem__read_file'"),
-        arguments: z.record(z.unknown()).optional().default({}).describe("Tool arguments"),
-      },
-    },
-    async ({ tool: name, arguments: args }) => {
-      try {
-        const result = await pool.call(name, args);
-
-        if (
-          result &&
-          typeof result === "object" &&
-          "content" in result &&
-          Array.isArray((result as Record<string, unknown>).content)
-        ) {
-          return result as { content: Array<{ type: "text"; text: string }> };
-        }
-
-        return {
-          content: [{
-            type: "text" as const,
-            text: typeof result === "string" ? result : JSON.stringify(result, null, 2),
-          }],
-        };
-      } catch (err) {
-        return {
-          content: [{
-            type: "text" as const,
-            text: `Error: ${err instanceof Error ? err.message : String(err)}`,
-          }],
-          isError: true,
-        };
-      }
     }
   );
 
