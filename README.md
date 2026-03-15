@@ -1,8 +1,8 @@
 # toolmux
 
-Smart MCP proxy with code execution. Connect N MCP servers, expose one endpoint with 4 meta-tools.
+Smart MCP proxy with code execution. Connect N MCP servers, expose one endpoint with 2 tools.
 
-Instead of dumping 50+ tool definitions into your agent's context window, toolmux gives the agent a small set of meta-tools and lets it discover, inspect, and call what it needs — either individually or by writing code that chains multiple calls together.
+Instead of dumping 50+ tool definitions into your agent's context window, toolmux gives the agent 2 tools — `execute` and `search` — and lets it write code against a typed tool surface.
 
 ## The problem
 
@@ -13,20 +13,28 @@ Even worse: when an agent needs to chain 5 API calls, each call round-trips thro
 ## How toolmux solves it
 
 ```
-Agent ←→ toolmux (4 tools) ←→ GitHub MCP (28 tools)
+Agent ←→ toolmux (2 tools) ←→ GitHub MCP (28 tools)
                               ←→ Slack MCP (15 tools)
                               ←→ Filesystem MCP (14 tools)
                               ←→ Linear MCP (22 tools)
 ```
 
-The agent sees 4 tools instead of 79. It can either call tools one at a time, or write code that chains multiple calls in a single execution:
+The agent sees **2 tools instead of 79**. The token cost is O(1) — it stays the same regardless of how many upstream tools exist:
 
-### Code execution mode (the good stuff)
+```
+Scenario                      Direct      Toolmux    Reduction
+1 server × 14 tools             2229        1474       34%
+3 servers × 45 tools            8859        1474       83%
+5 servers × 100 tools          19125        1474       92%
+10 servers × 200 tools         37925        1474       96%
+```
+
+### How the agent uses it
 
 The agent writes JavaScript that calls `tools.*` directly. Multiple calls execute in one shot — no round trips through the LLM between each call:
 
 ```js
-// Agent writes this code, toolmux executes it in a V8 sandbox
+// Agent writes this, toolmux executes it in a V8 sandbox
 const repos = await tools.github__list_repos({ owner: "octocat" });
 const issues = await Promise.all(
   repos.slice(0, 3).map(r =>
@@ -38,25 +46,19 @@ return { repoCount: repos.length, issues };
 
 The `execute` tool's description includes auto-generated TypeScript type declarations for every connected tool, so the LLM knows exactly what arguments to pass.
 
-### Simple mode
-
-For single calls, the agent can also use `discover` → `describe` → `call`:
+When the agent doesn't know what tools are available, it uses `search`:
 
 ```
-discover("create github issue")  →  github__create_issue
-describe("github__create_issue") →  { inputSchema: { title, body, repo, ... } }
-call("github__create_issue", { title: "Bug", body: "...", repo: "foo/bar" })
+search({ query: "create github issue", include_schema: true })
 ```
 
 ## Quick start
 
 ```bash
-# Clone and install
 git clone https://github.com/tylergibbs1/toolmux
 cd toolmux
 bun install
 
-# Create config
 cat > toolmux.json << 'EOF'
 {
   "servers": [
@@ -72,7 +74,6 @@ cat > toolmux.json << 'EOF'
 }
 EOF
 
-# Test it
 bun run src/cli.ts --help
 ```
 
@@ -184,10 +185,9 @@ All string values in config support `$VAR` and `${VAR}` expansion:
 
 ### `execute`
 
-Write and run JavaScript/TypeScript in a sandboxed V8 context. The code has access to all connected tools via `tools.qualified_name(args)`. Auto-generated type declarations are included in the tool description so the LLM knows the exact signatures.
+Write and run JavaScript in a sandboxed V8 context. Call any connected tool via `await tools.qualified_name(args)`. Auto-generated TypeScript type declarations are included in the tool description so the LLM knows exact signatures.
 
 ```js
-// Chain multiple calls — no LLM round trips between them
 const weather = await tools.weather__get_current({ location: "Austin, TX" });
 if (weather.temperature > 90) {
   await tools.slack__post_message({ channel: "#team", text: "It's hot in Austin!" });
@@ -202,30 +202,17 @@ The sandbox:
 - 30 second timeout
 - `console.log()` output is captured and returned
 
-### `discover`
+### `search`
 
-Search all connected servers for tools matching a natural language query.
-
-```
-discover({ query: "send a message" })
-discover({ query: "" })  // list all tools
-```
-
-### `describe`
-
-Get the full input schema for a specific tool.
+Find available tools by intent. Use before `execute` when you don't know the tool name or need its input schema.
 
 ```
-describe({ tool: "slack__post_message" })
+search({ query: "send a message" })                    // concise list
+search({ query: "github issues", include_schema: true }) // with full JSON schemas
+search({ query: "" })                                   // list all tools
 ```
 
-### `call`
-
-Invoke a single tool directly (no sandbox). For chaining multiple calls, use `execute`.
-
-```
-call({ tool: "github__create_issue", arguments: { title: "Bug", repo: "foo/bar" } })
-```
+The `include_schema` flag lets the agent get tool names + full input schemas in one round trip (replaces the old discover → describe two-step).
 
 ## How tool names work
 
@@ -241,7 +228,7 @@ Each tool gets a qualified name: `{server}__{original_name}`.
 ┌─────────┐     stdio      ┌──────────┐     stdio/http/sse     ┌───────────┐
 │  Agent   │◄──────────────►│ toolmux  │◄──────────────────────►│ MCP Srv 1 │
 │ (Claude, │                │          │◄──────────────────────►│ MCP Srv 2 │
-│  Cursor) │  4 meta-tools  │  Pool +  │◄──────────────────────►│ MCP Srv 3 │
+│  Cursor) │  2 meta-tools  │  Pool +  │◄──────────────────────►│ MCP Srv 3 │
 │          │                │  Index   │    N upstream servers   │    ...    │
 └─────────┘                 │  V8 VM   │                        └───────────┘
                             └──────────┘
@@ -262,6 +249,19 @@ When the agent uses `execute`:
 - **No database** — tool index lives in memory
 - **No auth layer** — credentials pass through to upstream servers via config
 - **V8 isolation** — sandboxed code can't access filesystem, network, or process
+
+## Examples
+
+```bash
+# Run the agent test (Claude + toolmux + filesystem MCP)
+ANTHROPIC_API_KEY=sk-... npx tsx examples/agent-test.ts
+
+# Force code execution mode
+ANTHROPIC_API_KEY=sk-... npx tsx examples/agent-test.ts --execute
+
+# Token efficiency benchmark
+ANTHROPIC_API_KEY=sk-... npx tsx examples/token-benchmark.ts
+```
 
 ## Inspired by
 

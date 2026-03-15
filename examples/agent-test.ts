@@ -2,14 +2,16 @@
 /**
  * Real-world agent test: Claude + toolmux + filesystem MCP server
  *
- * This script:
- * 1. Starts toolmux as a child process (which connects to the filesystem MCP server)
- * 2. Connects to toolmux via MCP client
- * 3. Gets toolmux's meta-tools (execute, discover, describe, call)
- * 4. Sends a task to Claude and runs the tool loop
+ * Connects to toolmux, gets its 2 meta-tools (execute, search),
+ * and runs Claude against a real task. Tracks token usage.
  *
  * Usage:
  *   ANTHROPIC_API_KEY=sk-... npx tsx examples/agent-test.ts
+ *   ANTHROPIC_API_KEY=sk-... npx tsx examples/agent-test.ts --execute
+ *
+ * Modes:
+ *   (default)   Let Claude choose how to use the tools
+ *   --execute   Force Claude to use the execute tool for code mode
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -21,11 +23,24 @@ import { dirname, join } from "node:path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, "..", "src", "cli.ts");
 
-// --- Config ---
 const MODEL = "claude-sonnet-4-6";
 const MAX_TURNS = 10;
-const TASK =
-  "List the files in /tmp and tell me how many there are. If there are any .txt files, read the first one you find and tell me what's in it.";
+
+const forceExecute = process.argv.includes("--execute");
+
+const DEFAULT_TASK =
+  "List the files in /private/tmp and tell me how many there are. " +
+  "If there are any .txt files, read the first one you find and tell me what's in it.";
+
+const EXECUTE_TASK =
+  "Use the execute tool to write a single script that:\n" +
+  "1. Lists all files in /private/tmp\n" +
+  "2. Filters to only .txt files\n" +
+  "3. Reads the first 5 lines of each .txt file (up to 3 files max)\n" +
+  "4. Returns a summary object with { txtFileCount, previews: [{ name, firstLines }] }\n\n" +
+  "Do this in one execute call, not multiple separate tool calls.";
+
+const TASK = forceExecute ? EXECUTE_TASK : DEFAULT_TASK;
 
 async function main() {
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -33,9 +48,10 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("--- toolmux agent test ---\n");
+  const mode = forceExecute ? "execute (code mode)" : "auto";
+  console.log(`--- toolmux agent test [${mode}] ---\n`);
 
-  // 1. Start toolmux as an MCP server via stdio
+  // 1. Connect to toolmux
   console.log("Starting toolmux...");
   const transport = new StdioClientTransport({
     command: "npx",
@@ -53,10 +69,10 @@ async function main() {
   // 2. Get toolmux's tools
   const { tools: mcpTools } = await mcpClient.listTools();
   console.log(
-    `Connected — toolmux exposes ${mcpTools.length} tools: ${mcpTools.map((t) => t.name).join(", ")}\n`
+    `Connected — ${mcpTools.length} tools: ${mcpTools.map((t) => t.name).join(", ")}\n`
   );
 
-  // 3. Convert MCP tools to Anthropic format
+  // 3. Convert to Anthropic format
   const anthropicTools: Anthropic.Tool[] = mcpTools.map((t) => ({
     name: t.name,
     description: t.description ?? "",
@@ -65,11 +81,13 @@ async function main() {
 
   // 4. Run the agent loop
   const anthropic = new Anthropic();
-  const messages: Anthropic.MessageParam[] = [
-    { role: "user", content: TASK },
-  ];
+  const messages: Anthropic.MessageParam[] = [{ role: "user", content: TASK }];
 
   console.log(`User: ${TASK}\n`);
+
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let turns = 0;
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const response = await anthropic.messages.create({
@@ -79,16 +97,28 @@ async function main() {
       messages,
     });
 
-    // Process response blocks
+    turns++;
+    totalInputTokens += response.usage.input_tokens;
+    totalOutputTokens += response.usage.output_tokens;
+
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
     for (const block of response.content) {
       if (block.type === "text") {
         console.log(`Claude: ${block.text}`);
       } else if (block.type === "tool_use") {
-        console.log(`\n[tool_use] ${block.name}(${JSON.stringify(block.input).slice(0, 200)})`);
+        // Display tool call
+        if (block.name === "execute") {
+          const code = (block.input as { code: string }).code;
+          console.log(`\n[execute]`);
+          console.log(`--- code ---`);
+          console.log(code);
+          console.log(`--- end code ---`);
+        } else {
+          console.log(`\n[${block.name}] ${JSON.stringify(block.input).slice(0, 200)}`);
+        }
 
-        // Call toolmux via MCP
+        // Forward to toolmux
         const result = await mcpClient.callTool({
           name: block.name,
           arguments: block.input as Record<string, unknown>,
@@ -99,10 +129,8 @@ async function main() {
           .map((c) => c.text!)
           .join("\n");
 
-        // Truncate for display
-        const preview = resultText.length > 500
-          ? resultText.slice(0, 497) + "..."
-          : resultText;
+        const preview =
+          resultText.length > 600 ? resultText.slice(0, 597) + "..." : resultText;
         console.log(`[result] ${preview}\n`);
 
         toolResults.push({
@@ -113,20 +141,24 @@ async function main() {
       }
     }
 
-    // Add assistant message to history
     messages.push({ role: "assistant", content: response.content });
 
-    // If there were tool calls, add results and continue
     if (toolResults.length > 0) {
       messages.push({ role: "user", content: toolResults });
     }
 
-    // Stop if no more tool calls
     if (response.stop_reason === "end_turn") {
-      console.log("\n--- done ---");
       break;
     }
   }
+
+  // 5. Summary
+  console.log("\n--- stats ---");
+  console.log(`  Turns:          ${turns}`);
+  console.log(`  Input tokens:   ${totalInputTokens}`);
+  console.log(`  Output tokens:  ${totalOutputTokens}`);
+  console.log(`  Total tokens:   ${totalInputTokens + totalOutputTokens}`);
+  console.log("--- done ---");
 
   await mcpClient.close();
 }
