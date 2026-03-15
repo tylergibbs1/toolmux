@@ -35,6 +35,7 @@ async function main() {
     command: "npx",
     args: ["tsx", CLI_PATH],
     env: { ...process.env } as Record<string, string>,
+    stderr: "pipe",
   });
 
   const mcpClient = new Client(
