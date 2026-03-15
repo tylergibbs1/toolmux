@@ -1,6 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Pool } from "./pool.js";
+import { Executor } from "./executor.js";
+import { buildExecuteDescription } from "./codegen.js";
 
 export function createToolmuxServer(pool: Pool): McpServer {
   const server = new McpServer(
@@ -8,20 +10,62 @@ export function createToolmuxServer(pool: Pool): McpServer {
     { capabilities: { tools: {} } }
   );
 
+  const executor = new Executor(pool);
+
+  // --- execute: write and run TypeScript against all tools ---
+  server.registerTool(
+    "execute",
+    {
+      title: "Execute Code",
+      description: buildExecuteDescription(pool.listTools()),
+      inputSchema: {
+        code: z.string().describe(
+          "TypeScript/JavaScript code to execute. Use tools.qualified_name(args) to call tools. Return a value to get it back."
+        ),
+      },
+    },
+    async ({ code }) => {
+      const result = await executor.execute(code);
+
+      const parts: string[] = [];
+
+      if (result.logs.length > 0) {
+        parts.push(result.logs.join("\n"));
+      }
+
+      if (result.error) {
+        parts.push(`Error: ${result.error}`);
+      } else if (result.value !== undefined) {
+        parts.push(
+          typeof result.value === "string"
+            ? result.value
+            : JSON.stringify(result.value, null, 2)
+        );
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: parts.join("\n\n") || "(no output)",
+        }],
+        isError: !!result.error,
+      };
+    }
+  );
+
+  // --- discover ---
   server.registerTool(
     "discover",
     {
       title: "Discover Tools",
       description: [
         "Search all connected servers for tools matching your intent.",
-        "Returns ranked results with qualified names you can pass to 'call'.",
-        "Workflow: discover → (optionally) describe → call.",
-        "Tip: Use natural language like 'create a file' or 'list repos'.",
+        "Returns ranked results with qualified names you can pass to 'call' or use in 'execute' code.",
         "Tip: Pass an empty query to list all available tools.",
       ].join("\n"),
       inputSchema: {
         query: z.string().describe(
-          "Natural language search, e.g. 'send slack message', 'read file', 'list github repos'. Empty string lists all tools."
+          "Natural language search, e.g. 'send slack message', 'read file'. Empty string lists all tools."
         ),
         limit: z.number().optional().default(10).describe("Max results (default 10)"),
       },
@@ -45,29 +89,29 @@ export function createToolmuxServer(pool: Pool): McpServer {
 
       const totalAvailable = pool.totalTools;
       const footer = results.length < totalAvailable
-        ? `\nShowing ${results.length} of ${totalAvailable} total tools. Refine your query or increase limit to see more.`
+        ? `\nShowing ${results.length} of ${totalAvailable} total tools.`
         : "";
 
       return {
         content: [{
           type: "text" as const,
-          text: `${lines.join("\n")}${footer}\n\nTo call a tool: use the 'call' tool with the qualified name and arguments.\nTo see full input schema first: use the 'describe' tool.`,
+          text: `${lines.join("\n")}${footer}`,
         }],
       };
     }
   );
 
+  // --- describe ---
   server.registerTool(
     "describe",
     {
       title: "Describe Tool",
       description: [
-        "Get the full input schema for a tool so you know exactly what arguments to pass.",
-        "Use the qualified name from discover results (e.g. 'github__list_repos').",
-        "Skip this step if you already know the arguments — go straight to 'call'.",
+        "Get the full input schema for a tool.",
+        "Use this before 'execute' if you need to know exact argument shapes.",
       ].join("\n"),
       inputSchema: {
-        tool: z.string().describe("Qualified tool name from discover results, e.g. 'filesystem__read_file'"),
+        tool: z.string().describe("Qualified tool name, e.g. 'filesystem__read_file'"),
       },
     },
     async ({ tool: name }) => {
@@ -98,18 +142,18 @@ export function createToolmuxServer(pool: Pool): McpServer {
     }
   );
 
+  // --- call (simple single-tool invocation, no sandbox) ---
   server.registerTool(
     "call",
     {
       title: "Call Tool",
       description: [
-        "Invoke a tool on its upstream server.",
-        "Pass the qualified name from discover and the arguments matching its input schema.",
-        "If you're unsure about arguments, use 'describe' first to see the schema.",
+        "Invoke a single tool directly (no code execution).",
+        "For chaining multiple calls, use 'execute' instead.",
       ].join("\n"),
       inputSchema: {
         tool: z.string().describe("Qualified tool name, e.g. 'filesystem__read_file'"),
-        arguments: z.record(z.unknown()).optional().default({}).describe("Tool arguments matching its input schema"),
+        arguments: z.record(z.unknown()).optional().default({}).describe("Tool arguments"),
       },
     },
     async ({ tool: name, arguments: args }) => {

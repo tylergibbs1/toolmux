@@ -68,13 +68,14 @@ describe("toolmux MCP server", () => {
     await client?.close();
   });
 
-  it("exposes exactly 3 tools", async () => {
+  it("exposes exactly 4 tools", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
+    expect(names).toContain("execute");
     expect(names).toContain("discover");
     expect(names).toContain("describe");
     expect(names).toContain("call");
-    expect(names).toHaveLength(3);
+    expect(names).toHaveLength(4);
   });
 
   it("discover returns matching tools", async () => {

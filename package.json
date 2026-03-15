@@ -7,7 +7,7 @@
     "toolmux": "./bin/toolmux.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp src/sandbox-worker.mjs dist/",
     "dev": "bun run src/cli.ts",
     "start": "bun run dist/cli.js",
     "test": "vitest run",
