@@ -157,7 +157,6 @@ describe("generateTypeDeclarations", () => {
   it("includes JSDoc comments with descriptions", () => {
     const result = generateTypeDeclarations(tools);
     expect(result).toContain("Create a GitHub issue");
-    expect(result).toContain("[github]");
     expect(result).toContain("Post a Slack message");
   });
 

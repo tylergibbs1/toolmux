@@ -66,20 +66,17 @@ function truncate(s: string, max: number): string {
  * This gets injected into the LLM's context so it knows what's callable.
  */
 export function generateTypeDeclarations(tools: IndexedTool[]): string {
-  const lines: string[] = [
-    "// Available tools — call via tools.qualifiedName(args)",
-    "// Tool calls are proxied to the upstream MCP servers.",
-    "declare const tools: {",
-  ];
+  const lines: string[] = ["declare const tools: {"];
 
   for (const tool of tools) {
     const inputType = schemaToTs(tool.inputSchema);
+    // Keep descriptions short — just enough to disambiguate
     const desc = tool.description
-      ? tool.description.replace(/\*\//g, "* /").slice(0, 200)
+      ? tool.description.replace(/\*\//g, "* /").split(/[.!]\s/)[0].slice(0, 80)
       : "";
 
     if (desc) {
-      lines.push(`  /** ${desc} [${tool.server}] */`);
+      lines.push(`  /** ${desc} */`);
     }
     lines.push(`  ${tool.qualifiedName}(input: ${inputType}): Promise<unknown>;`);
   }
@@ -95,24 +92,7 @@ export function buildExecuteDescription(tools: IndexedTool[]): string {
   const typeBlock = generateTypeDeclarations(tools);
 
   const parts = [
-    "Execute TypeScript code in a sandboxed environment.",
-    "The code runs with a `tools` object providing typed access to all connected MCP servers.",
-    "",
-    "How to write code:",
-    "- Write an async function body or an arrow function",
-    "- Call tools using: await tools.qualified_name({ ...args })",
-    "- Return results from your code — they will be sent back to you",
-    "- console.log() output is captured and returned",
-    "- fetch() is NOT available — use tools.* for all external calls",
-    "- You can chain multiple tool calls, use conditionals, loops, try/catch",
-    "",
-    "Example:",
-    '  const repos = await tools.github__list_repos({ owner: "octocat" });',
-    "  const issues = await Promise.all(",
-    "    repos.slice(0, 3).map(r => tools.github__list_issues({ owner: r.owner, repo: r.name }))",
-    "  );",
-    "  return { repos: repos.length, issues };",
-    "",
+    "Run JS in sandbox. Call tools via await tools.name(args). Return a value. No fetch.",
     typeBlock,
   ];
 
