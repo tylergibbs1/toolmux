@@ -1,0 +1,30 @@
+{
+  "name": "toolmux",
+  "version": "0.1.0",
+  "description": "Smart MCP proxy — connect N MCP servers, expose one endpoint with discover/describe/call meta-tools",
+  "type": "module",
+  "bin": {
+    "toolmux": "./bin/toolmux.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "bun run src/cli.ts",
+    "start": "bun run dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "files": [
+    "dist",
+    "bin"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.0"
+  }
+}

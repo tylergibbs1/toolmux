@@ -1,0 +1,34 @@
+{
+  "servers": [
+    {
+      "name": "filesystem",
+      "transport": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+      }
+    },
+    {
+      "name": "github",
+      "transport": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": {
+          "GITHUB_PERSONAL_ACCESS_TOKEN": "$GITHUB_TOKEN"
+        }
+      }
+    },
+    {
+      "name": "remote-api",
+      "transport": {
+        "type": "http",
+        "url": "https://example.com/mcp",
+        "headers": {
+          "Authorization": "Bearer $API_TOKEN"
+        }
+      },
+      "disabled": true
+    }
+  ]
+}
