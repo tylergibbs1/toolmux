@@ -1,56 +1,10 @@
 # toolmux
 
+[![npm](https://img.shields.io/npm/v/toolmux)](https://www.npmjs.com/package/toolmux)
+
 Smart MCP proxy with code execution. Connect N MCP servers, expose one endpoint with 2 tools.
 
 Instead of dumping 50+ tool definitions into your agent's context window, toolmux gives the agent 2 tools — `execute` and `search` — and lets it write code against a typed tool surface.
-
-## The problem
-
-When you connect multiple MCP servers to an agent, every tool gets injected into the context window. 5 servers with 20 tools each = 100 tool definitions the model has to parse on every turn. This wastes tokens, degrades tool selection accuracy, and hits context limits fast.
-
-Even worse: when an agent needs to chain 5 API calls, each call round-trips through the LLM. The model reads the result, decides the next call, outputs it, reads that result... burning tokens and time on what should be a simple script.
-
-## How toolmux solves it
-
-```
-Agent ←→ toolmux (2 tools) ←→ GitHub MCP (28 tools)
-                              ←→ Slack MCP (15 tools)
-                              ←→ Filesystem MCP (14 tools)
-                              ←→ Linear MCP (22 tools)
-```
-
-The agent sees **2 tools instead of 79**. The token cost is O(1) — it stays the same regardless of how many upstream tools exist:
-
-```
-Scenario                      Direct      Toolmux    Reduction
-1 server × 14 tools             2229        1474       34%
-3 servers × 45 tools            8859        1474       83%
-5 servers × 100 tools          19125        1474       92%
-10 servers × 200 tools         37925        1474       96%
-```
-
-### How the agent uses it
-
-The agent writes JavaScript that calls `tools.*` directly. Multiple calls execute in one shot — no round trips through the LLM between each call:
-
-```js
-// Agent writes this, toolmux executes it in a V8 sandbox
-const repos = await tools.github__list_repos({ owner: "octocat" });
-const issues = await Promise.all(
-  repos.slice(0, 3).map(r =>
-    tools.github__list_issues({ owner: r.owner, repo: r.name })
-  )
-);
-return { repoCount: repos.length, issues };
-```
-
-The `execute` tool's description includes auto-generated TypeScript type declarations for every connected tool, so the LLM knows exactly what arguments to pass.
-
-When the agent doesn't know what tools are available, it uses `search`:
-
-```
-search({ query: "create github issue", include_schema: true })
-```
 
 ## Quick start
 
@@ -136,6 +90,56 @@ Add to `.cursor/mcp.json`:
     }
   }
 }
+```
+
+## How it works
+
+### The problem it solves
+
+When you connect multiple MCP servers to an agent, every tool gets injected into the context window. 5 servers with 20 tools each = 100 tool definitions the model has to parse on every turn. This wastes tokens, degrades tool selection accuracy, and hits context limits fast.
+
+Even worse: when an agent needs to chain 5 API calls, each call round-trips through the LLM. The model reads the result, decides the next call, outputs it, reads that result... burning tokens and time on what should be a simple script.
+
+### The fix
+
+```
+Agent ←→ toolmux (2 tools) ←→ GitHub MCP (28 tools)
+                              ←→ Slack MCP (15 tools)
+                              ←→ Filesystem MCP (14 tools)
+                              ←→ Linear MCP (22 tools)
+```
+
+The agent sees **2 tools instead of 79**. The token cost is O(1) — it stays the same regardless of how many upstream tools exist:
+
+```
+Scenario                      Direct      Toolmux    Reduction
+1 server × 14 tools             2229        1474       34%
+3 servers × 45 tools            8859        1474       83%
+5 servers × 100 tools          19125        1474       92%
+10 servers × 200 tools         37925        1474       96%
+```
+
+### How the agent uses it
+
+The agent writes JavaScript that calls `tools.*` directly. Multiple calls execute in one shot — no round trips through the LLM between each call:
+
+```js
+// Agent writes this, toolmux executes it in a V8 sandbox
+const repos = await tools.github__list_repos({ owner: "octocat" });
+const issues = await Promise.all(
+  repos.slice(0, 3).map(r =>
+    tools.github__list_issues({ owner: r.owner, repo: r.name })
+  )
+);
+return { repoCount: repos.length, issues };
+```
+
+The `execute` tool's description includes auto-generated TypeScript type declarations for every connected tool, so the LLM knows exactly what arguments to pass.
+
+When the agent doesn't know what tools are available, it uses `search`:
+
+```
+search({ query: "create github issue", include_schema: true })
 ```
 
 ## Config
@@ -286,6 +290,15 @@ ANTHROPIC_API_KEY=sk-... npx tsx examples/agent-test.ts --execute
 
 # Token efficiency benchmark
 ANTHROPIC_API_KEY=sk-... npx tsx examples/token-benchmark.ts
+```
+
+## Development
+
+```bash
+bun install
+bun run dev -- --help   # run the CLI from source
+bun run test            # vitest
+bun run build           # compile to dist/
 ```
 
 ## Inspired by
